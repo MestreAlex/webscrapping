@@ -1,0 +1,121 @@
+!pip install selenium
+!pip install tinydb
+
+import pandas as pd
+from tinydb import TinyDB,Query
+import warnings
+warnings.filterwarnings('ignore')
+from selenium import webdriver
+from time import sleep
+from tqdm.auto import tqdm
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from datetime import date, datetime, timedelta
+
+dia = date.today() + timedelta(1)
+
+jogos_do_dia = TinyDB(f'Jogos_do_Dia_FlashScore_{dia}.json')
+
+options = webdriver.ChromeOptions()
+options.add_argument('--headless')
+
+s = Service('/chromedriver-win64.exe')
+driver = webdriver.Chrome(service=s, options=options)
+driver.maximize_window()
+
+url = 'https://www.flashscore.com/'
+driver.get(url)
+try:
+    WebDriverWait(driver, 8).until(EC.visibility_of_element_located((By.CSS_SELECTOR,'button#onetrust-accept-btn-handler')))
+    button_cookies = driver.find_element(By.CSS_SELECTOR,'button#onetrust-accept-btn-handler')
+    button_cookies.click()
+except:
+    print("cookies already closed")
+
+WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.CSS_SELECTOR,'.calendar__navigation--tomorrow')))
+driver.execute_script("document.getElementsByClassName('otPlaceholder')[0].style.display='none';")
+driver.find_element(By.CSS_SELECTOR,'.calendar__navigation--tomorrow').click()
+sleep(5)
+
+jogos = driver.find_elements(By.CSS_SELECTOR,'div.event__match--twoLine')
+id_jogos =[]
+for i in jogos:
+    id_jogos.append(i.get_attribute("id")[4:])
+
+print(driver.title)
+for id_jogo in tqdm(id_jogos):
+    procura_duplicado = Query()
+    if jogos_do_dia.search(procura_duplicado.Id == id_jogo) == []:
+        driver.get(f'https://www.flashscore.com/match/{id_jogo}/#/match-summary/match-summary')
+        country = driver.find_element(By.CSS_SELECTOR,'span.tournamentHeader__country').text.split(':')[0]
+        league = driver.find_element(By.CSS_SELECTOR,'span.tournamentHeader__country > a').text.split(' -')[0]
+        try:
+            jogo = {}
+            
+            # Informações Básicas
+            driver.get(f'https://www.flashscore.com/match/{id_jogo}/#/match-summary/match-summary')
+            jogo['Id'] = id_jogo
+            country = driver.find_element(By.CSS_SELECTOR,'span.tournamentHeader__country').text.split(':')[0]
+            date = driver.find_element(By.CSS_SELECTOR,'div.duelParticipant__startTime').text.split(' ')[0]
+            jogo['Date'] = date.replace('.','/')
+            time = driver.find_element(By.CSS_SELECTOR,'div.duelParticipant__startTime').text.split(' ')[1]
+            jogo['Time'] = time
+            league = driver.find_element(By.CSS_SELECTOR,'span.tournamentHeader__country > a').text.split(' -')[0]
+            jogo['League'] = f'{country} - {league}'
+            home = driver.find_element(By.CSS_SELECTOR,'div.duelParticipant__home').find_element(By.CSS_SELECTOR,'div.participant__participantName').text
+            jogo['Home'] = home
+            away = driver.find_element(By.CSS_SELECTOR,'div.duelParticipant__away').find_element(By.CSS_SELECTOR,'div.participant__participantName').text
+            jogo['Away'] = away
+            
+            # Pegando as Odds do Match Odds
+            url_ml_full_time = f'https://www.flashscore.com/match/{id_jogo}/#/odds-comparison/1x2-odds/full-time'
+            driver.get(url_ml_full_time)
+            sleep(1)
+            if driver.current_url == url_ml_full_time:
+                WebDriverWait(driver, 8).until(EC.visibility_of_element_located((By.CSS_SELECTOR,'div.ui-table')))
+                table_odds = driver.find_element(By.CSS_SELECTOR,'div.ui-table')
+                linha_ml_ft = table_odds.find_element(By.CSS_SELECTOR,'div.ui-table__row')
+                jogo['Odd_H_FT'] = float(linha_ml_ft.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[0].text)
+                jogo['Odd_D_FT'] = float(linha_ml_ft.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[1].text)
+                jogo['Odd_A_FT'] = float(linha_ml_ft.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[2].text)
+                
+            # Pegando as Odds do Over e Under
+            url_ou_full_time = f'https://www.flashscore.com/match/{id_jogo}/#/odds-comparison/over-under/full-time'
+            driver.get(url_ou_full_time)
+            sleep(1)
+            if driver.current_url == url_ou_full_time:
+                WebDriverWait(driver, 8).until(EC.visibility_of_element_located((By.CSS_SELECTOR,'div.ui-table')))
+                linhas = driver.find_elements(By.CSS_SELECTOR,'div.ui-table__body')
+                for linha in linhas:
+                    if (len(linha.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')) > 1):
+                        bookie = linha.find_element(By.CSS_SELECTOR,'img.prematchLogo').get_attribute('title')
+                        total_gols = linha.find_element(By.CSS_SELECTOR,'span.oddsCell__noOddsCell').text.replace('.','')
+                        if total_gols == '25':
+                            over = float(linha.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[0].text)
+                            under = float(linha.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[1].text)
+                            jogo[f'Odd_Over{total_gols}_FT'] = over
+                            jogo[f'Odd_Under{total_gols}_FT'] = under
+
+            # Pegando as Odds do BTTS
+            url_btts_full_time = f'https://www.flashscore.com/match/{id_jogo}/#/odds-comparison/both-teams-to-score/full-time'
+            driver.get(url_btts_full_time)
+            sleep(1)
+            if driver.current_url == url_btts_full_time:
+                WebDriverWait(driver, 8).until(EC.visibility_of_element_located((By.CSS_SELECTOR,'div.ui-table')))
+                linha = driver.find_element(By.CSS_SELECTOR,'div.ui-table__row')
+                bookie_btts = linha.find_element(By.CSS_SELECTOR,'img.prematchLogo').get_attribute('title')
+                jogo['Odd_BTTS_Yes'] = float(linha.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[0].text)
+                jogo['Odd_BTTS_No'] = float(linha.find_elements(By.CSS_SELECTOR,'a.oddsCell__odd')[1].text)
+            jogos_do_dia.insert(jogo.copy())
+        except:
+            pass
+
+driver.close()
+
+df = pd.DataFrame(jogos_do_dia.all())
+df = df.dropna()
+df = df.reset_index(drop=True)
+df.index += 1
+df.to_excel(f"Jogos_do_Dia_FlashScore_{dia}.xlsx",index=False)
